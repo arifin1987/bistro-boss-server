@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const app= express();
 const cors = require('cors');
 require('dotenv').config();
+const stripe = require('stripe')(process.env.PAYMENT_SECRET_KEY)
 const port = process.env.PORT || 5000;
 
 
@@ -46,15 +47,29 @@ async function run() {
     const menuCollection = client.db("bistroDb").collection("menu");
     const reviewCollection = client.db("bistroDb").collection("reviews");
     const cartCollection = client.db("bistroDb").collection("carts");
+    const paymentCollection = client.db("bistroDb").collection("payments");
     
     app.post('/jwt', (req,res)=>{
       const user = req.body;
       const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET,{expiresIn:'1h'})
       res.send({token})
     })
+
+    const verifyAdmin = async(req,res,next)=>{
+      const email = req.decoded.email;
+      const query ={email:email}
+      const user = await usersCollection.findOne(query);
+      if(user?.role !=='admin'){
+        return res.status(403).send({error:true,message:'forbidden message'});
+      }
+      next();
+
+    }
+
+    //0.donot show secure links to those who should not see the links 1.use jwt token:verifyJWT 2.use verifyAdmin middleware
     
     // users related apis
-    app.get('/users',async(req,res)=>{
+    app.get('/users',verifyJWT,verifyAdmin, async(req,res)=>{
       const result = await usersCollection.find().toArray();
       res.send(result);
     })
@@ -103,6 +118,19 @@ async function run() {
         const result = await menuCollection.find().toArray();
         res.send(result);
     })
+
+    app.post('/menu', async(req,res)=>{
+      const newItem = req.body;
+      const result = await menuCollection.insertOne(newItem)
+      res.send(result);
+    })
+
+    app.delete('/menu/:id',verifyJWT, verifyAdmin , async(req,res)=>{
+      const id = req.params.id;
+      const query ={_id:new ObjectId(id)}
+      const result = await menuCollection.deleteOne(query);
+      res.send(result);
+    })
     // review related apis
     app.get('/reviews', async(req,res)=>{
         const result= await reviewCollection.find().toArray();
@@ -136,6 +164,27 @@ async function run() {
       const query = {_id: new ObjectId(id)};
       const result = await cartCollection.deleteOne(query);
       res.send(result);
+    })
+    // create payment intent
+    app.post('/create-payment-intent',async(req,res)=>{
+      const {price}= req.body;
+      const amount = price *100;
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount:amount,
+        currency: 'usd',
+        payment_method_types:['card']
+      });
+      res.send({
+        clientSecret: paymentIntent.client_secret
+      })
+    })
+    // payment related api
+    app.post('/payments',verifyJWT,async(req,res)=>{
+      const payment = req.body;
+      const insertResult = await paymentCollection.insertOne(payment);
+      const query={_id: {$in:payment.cartItems.map(id=>new ObjectId(id))}}
+      const deleteResult = await cartCollection.deleteMany(query)
+      res.send({insertResult,deleteResult});
     })
      
     // Send a ping to confirm a successful connection
